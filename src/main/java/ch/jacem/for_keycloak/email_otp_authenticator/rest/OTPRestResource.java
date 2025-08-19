@@ -7,6 +7,7 @@ import jakarta.ws.rs.core.Response;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.ClientModel;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.sessions.RootAuthenticationSessionModel;
 
@@ -72,9 +73,12 @@ public class OTPRestResource {
             // Generate OTP
             String otpCode = generateOTP();
             
-            // Store OTP in user session or attributes
+            // Create or get a default client for OTP API operations
+            ClientModel client = getOrCreateOTPApiClient(realm);
+            
+            // Store OTP in authentication session
             RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
-            AuthenticationSessionModel authSession = rootSession.createAuthenticationSession(session.getContext().getClient());
+            AuthenticationSessionModel authSession = rootSession.createAuthenticationSession(client);
             authSession.setAuthNote(AUTH_NOTE_OTP_KEY, otpCode);
             authSession.setAuthNote(AUTH_NOTE_OTP_CREATED_AT, String.valueOf(System.currentTimeMillis() / 1000));
             authSession.setAuthenticatedUser(user);
@@ -187,6 +191,26 @@ public class OTPRestResource {
         response.put("message", message);
         response.put("data", null);
         return Response.status(Response.Status.BAD_REQUEST).entity(response).build();
+    }
+
+    private ClientModel getOrCreateOTPApiClient(RealmModel realm) {
+        String clientId = "email-otp-api-client";
+        ClientModel client = realm.getClientByClientId(clientId);
+        
+        if (client == null) {
+            logger.infof("Creating OTP API client: %s", clientId);
+            client = realm.addClient(clientId);
+            client.setName("Email OTP API Client");
+            client.setDescription("Internal client for Email OTP API operations");
+            client.setEnabled(true);
+            client.setPublicClient(true);
+            client.setDirectAccessGrantsEnabled(false);
+            client.setServiceAccountsEnabled(false);
+            client.setImplicitFlowEnabled(false);
+            client.setStandardFlowEnabled(false);
+        }
+        
+        return client;
     }
 
     public static class OTPSendRequest {
