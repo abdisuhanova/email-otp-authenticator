@@ -103,6 +103,13 @@
             <version>${jakarta.ws.rs-api.version}</version>
             <scope>provided</scope>
         </dependency>
+
+        <!-- Twilio SendGrid for email sending -->
+        <dependency>
+            <groupId>com.sendgrid</groupId>
+            <artifactId>sendgrid-java</artifactId>
+            <version>4.10.2</version>
+        </dependency>
     </dependencies>
 
     <dependencyManagement>
