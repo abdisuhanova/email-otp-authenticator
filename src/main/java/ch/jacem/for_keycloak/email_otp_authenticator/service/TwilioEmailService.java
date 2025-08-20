@@ -62,12 +62,58 @@ public class TwilioEmailService {
         }
     }
 
+    public void sendLoginOTPEmail(String toEmail, String otpCode, int expiryMinutes) {
+        try {
+            if (SENDGRID_API_KEY == null || FROM_EMAIL == null) {
+                throw new RuntimeException("SendGrid credentials not configured. Please set SENDGRID_API_KEY and SENDGRID_FROM_EMAIL environment variables.");
+            }
+
+            Email from = new Email(FROM_EMAIL, FROM_NAME != null ? FROM_NAME : "OTP Service");
+            Email to = new Email(toEmail);
+            String subject = "Your Login Verification Code";
+            Content content = new Content("text/plain", buildLoginOTPEmailContent(otpCode, expiryMinutes));
+
+            Mail mail = new Mail(from, subject, to, content);
+
+            Request request = new Request();
+            request.setMethod(Method.POST);
+            request.setEndpoint("mail/send");
+            request.setBody(mail.build());
+
+            Response response = sendGrid.api(request);
+
+            if (response.getStatusCode() >= 200 && response.getStatusCode() < 300) {
+                logger.infof("Login OTP email sent successfully to %s via SendGrid", toEmail);
+            } else {
+                logger.errorf("Failed to send login OTP email via SendGrid. Status: %d, Body: %s", 
+                             response.getStatusCode(), response.getBody());
+                throw new RuntimeException("Failed to send login OTP email via SendGrid. Status: " + response.getStatusCode());
+            }
+            
+        } catch (IOException e) {
+            logger.error("Failed to send login OTP email via SendGrid", e);
+            throw new RuntimeException("Failed to send login OTP email: " + e.getMessage());
+        }
+    }
+
     private String buildOTPEmailContent(String otpCode, int expiryMinutes) {
         return String.format(
             "Hello,\n\n" +
             "Your email verification code is: %s\n\n" +
             "This code will expire in %d minutes.\n\n" +
             "If you did not request this code, please ignore this email.\n\n" +
+            "Best regards,\n" +
+            "Your Application Team",
+            otpCode, expiryMinutes
+        );
+    }
+
+    private String buildLoginOTPEmailContent(String otpCode, int expiryMinutes) {
+        return String.format(
+            "Hello,\n\n" +
+            "Your login verification code is: %s\n\n" +
+            "This code will expire in %d minutes.\n\n" +
+            "If you did not initiate this login, please secure your account immediately.\n\n" +
             "Best regards,\n" +
             "Your Application Team",
             otpCode, expiryMinutes

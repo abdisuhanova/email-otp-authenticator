@@ -16,6 +16,7 @@ import ch.jacem.for_keycloak.email_otp_authenticator.service.TwilioEmailService;
 import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.List;
 
 import org.jboss.logging.Logger;
 
@@ -168,6 +169,133 @@ public class OTPRestResource {
         }
     }
 
+    @POST
+    @Path("/login")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response secureLogin(SecureLoginRequest request) {
+        try {
+            RealmModel realm = session.getContext().getRealm();
+            
+            if (request.email == null || request.email.isEmpty()) {
+                return createErrorResponse("Email is required");
+            }
+            
+            // Find user by email (OTP-only authentication, no password required)
+            UserModel user = session.users().getUserByEmail(realm, request.email);
+            if (user == null) {
+                return createErrorResponse("User not found with this email");
+            }
+
+            // Check if user is enabled
+            if (!user.isEnabled()) {
+                return createErrorResponse("Account is disabled");
+            }
+
+            // For OTP-only authentication, we just need to verify the user exists and is enabled
+
+            // Password is valid, now check OTP status
+            ClientModel client = getOrCreateOTPApiClient(realm);
+            
+            // Check if we have an existing session for this user
+            String existingSessionId = findExistingLoginSession(realm, user);
+            AuthenticationSessionModel authSession;
+            
+            if (existingSessionId != null) {
+                // Use existing session
+                RootAuthenticationSessionModel rootSession = session.authenticationSessions()
+                    .getRootAuthenticationSession(realm, existingSessionId);
+                authSession = rootSession.getAuthenticationSessions().values().iterator().next();
+            } else {
+                // Create new session
+                RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
+                authSession = rootSession.createAuthenticationSession(client);
+                authSession.setAuthenticatedUser(user);
+                authSession.setAuthNote("LOGIN_USER_VERIFIED", "true");
+                authSession.setAuthNote("LOGIN_USER_VERIFIED_AT", String.valueOf(System.currentTimeMillis() / 1000));
+            }
+
+            // Check if OTP code was provided
+            if (request.otpCode == null || request.otpCode.isEmpty()) {
+                // No OTP provided - send OTP and request it
+                String loginOTP = generateOTP();
+                authSession.setAuthNote("LOGIN_OTP", loginOTP);
+                authSession.setAuthNote("LOGIN_OTP_CREATED_AT", String.valueOf(System.currentTimeMillis() / 1000));
+
+                // Send OTP email
+                emailService.sendLoginOTPEmail(request.email, loginOTP, OTP_EXPIRY_SECONDS / 60);
+
+                logger.infof("Login initiated for %s, OTP sent", request.email);
+                return Response.ok(Map.of(
+                    "success", false,
+                    "otpRequired", true,
+                    "message", "Please check your email for the verification code.",
+                    "sessionId", authSession.getParentSession().getId()
+                )).build();
+            } else {
+                // OTP provided - validate it
+                String storedOTP = authSession.getAuthNote("LOGIN_OTP");
+                String otpCreatedAtStr = authSession.getAuthNote("LOGIN_OTP_CREATED_AT");
+                String userVerified = authSession.getAuthNote("LOGIN_USER_VERIFIED");
+
+                if (userVerified == null || !userVerified.equals("true")) {
+                    return createErrorResponse("Invalid login session state");
+                }
+
+                if (storedOTP == null || otpCreatedAtStr == null) {
+                    return createErrorResponse("No OTP found. Please restart login process.");
+                }
+
+                // Check OTP expiration
+                long otpCreatedAt = Long.parseLong(otpCreatedAtStr);
+                long now = System.currentTimeMillis() / 1000;
+                if ((now - OTP_EXPIRY_SECONDS) > otpCreatedAt) {
+                    authSession.removeAuthNote("LOGIN_OTP");
+                    authSession.removeAuthNote("LOGIN_OTP_CREATED_AT");
+                    return createErrorResponse("OTP has expired. Please restart login process.");
+                }
+
+                // Verify OTP
+                if (!storedOTP.equals(request.otpCode)) {
+                    return createErrorResponse("Invalid OTP code");
+                }
+
+                // Login successful - clean up session and return success
+                authSession.removeAuthNote("LOGIN_OTP");
+                authSession.removeAuthNote("LOGIN_OTP_CREATED_AT");
+                authSession.removeAuthNote("LOGIN_USER_VERIFIED");
+                authSession.removeAuthNote("LOGIN_USER_VERIFIED_AT");
+
+                // Update user last login
+                user.setAttribute("last_login", List.of(String.valueOf(System.currentTimeMillis())));
+
+                logger.infof("Secure login completed successfully for %s", request.email);
+                return createSuccessResponse("Login successful!", Map.of(
+                    "userId", user.getId(),
+                    "email", user.getEmail(),
+                    "emailVerified", user.isEmailVerified(),
+                    "loginTimestamp", System.currentTimeMillis()
+                ));
+            }
+
+        } catch (Exception e) {
+            logger.error("Failed to process secure login", e);
+            return createErrorResponse("Failed to process login: " + e.getMessage());
+        }
+    }
+
+    private String findExistingLoginSession(RealmModel realm, UserModel user) {
+        // Look for existing sessions with password verified but pending OTP
+        // This is a simplified approach - in production you might want more sophisticated session management
+        try {
+            // For now, we'll create a new session each time for security
+            // You could implement session reuse logic here if needed
+            return null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private String generateOTP() {
         SecureRandom secureRandom = new SecureRandom();
         StringBuilder otpBuilder = new StringBuilder(OTP_LENGTH);
@@ -239,5 +367,10 @@ public class OTPRestResource {
         public String email;
         public String code;
         public String sessionId;
+    }
+
+    public static class SecureLoginRequest {
+        public String email;
+        public String otpCode; // Optional - only provide after receiving OTP email
     }
 }
