@@ -197,23 +197,12 @@ public class OTPRestResource {
             // Password is valid, now check OTP status
             ClientModel client = getOrCreateOTPApiClient(realm);
             
-            // Check if we have an existing session for this user
-            String existingSessionId = findExistingLoginSession(realm, user);
-            AuthenticationSessionModel authSession;
-            
-            if (existingSessionId != null) {
-                // Use existing session
-                RootAuthenticationSessionModel rootSession = session.authenticationSessions()
-                    .getRootAuthenticationSession(realm, existingSessionId);
-                authSession = rootSession.getAuthenticationSessions().values().iterator().next();
-            } else {
-                // Create new session
-                RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
-                authSession = rootSession.createAuthenticationSession(client);
-                authSession.setAuthenticatedUser(user);
-                authSession.setAuthNote("LOGIN_USER_VERIFIED", "true");
-                authSession.setAuthNote("LOGIN_USER_VERIFIED_AT", String.valueOf(System.currentTimeMillis() / 1000));
-            }
+            // Create new session for OTP process
+            RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
+            AuthenticationSessionModel authSession = rootSession.createAuthenticationSession(client);
+            authSession.setAuthenticatedUser(user);
+            authSession.setAuthNote("LOGIN_USER_VERIFIED", "true");
+            authSession.setAuthNote("LOGIN_USER_VERIFIED_AT", String.valueOf(System.currentTimeMillis() / 1000));
 
             // Check if OTP code was provided
             if (request.otpCode == null || request.otpCode.isEmpty()) {
@@ -282,6 +271,259 @@ public class OTPRestResource {
             logger.error("Failed to process secure login", e);
             return createErrorResponse("Failed to process login: " + e.getMessage());
         }
+    }
+
+    // ============ NEW COMPREHENSIVE OTP API SYSTEM ============
+    
+    @POST
+    @Path("/otp/send/email")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response sendEmailOTP(OTPSendEmailRequest request) {
+        try {
+            RealmModel realm = session.getContext().getRealm();
+            
+            if (request.email == null || request.email.isEmpty()) {
+                return createErrorResponse("Email is required");
+            }
+
+            // Find user
+            UserModel user = session.users().getUserByEmail(realm, request.email);
+            if (user == null) {
+                return createErrorResponse("User not found");
+            }
+
+            if (!user.isEnabled()) {
+                return createErrorResponse("Account is disabled");
+            }
+
+            // Create session for OTP
+            ClientModel client = getOrCreateOTPApiClient(realm);
+            RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
+            AuthenticationSessionModel authSession = rootSession.createAuthenticationSession(client);
+            authSession.setAuthenticatedUser(user);
+            
+            // Generate and store OTP
+            String otpCode = generateOTP();
+            authSession.setAuthNote("EMAIL_OTP_CODE", otpCode);
+            authSession.setAuthNote("EMAIL_OTP_CREATED_AT", String.valueOf(System.currentTimeMillis() / 1000));
+            authSession.setAuthNote("OTP_TYPE", "email");
+            
+            // Send email OTP
+            emailService.sendLoginOTPEmail(request.email, otpCode, OTP_EXPIRY_SECONDS / 60);
+
+            logger.infof("Email OTP sent to %s", request.email);
+            return createSuccessResponse("OTP sent to email successfully", Map.of(
+                "sessionId", authSession.getParentSession().getId(),
+                "type", "email",
+                "expirySeconds", OTP_EXPIRY_SECONDS
+            ));
+
+        } catch (Exception e) {
+            logger.error("Failed to send email OTP", e);
+            return createErrorResponse("Failed to send email OTP: " + e.getMessage());
+        }
+    }
+
+    @POST
+    @Path("/otp/send/sms")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response sendSMSOTP(OTPSendSMSRequest request) {
+        try {
+            RealmModel realm = session.getContext().getRealm();
+            
+            if (request.phoneNumber == null || request.phoneNumber.isEmpty()) {
+                return createErrorResponse("Phone number is required");
+            }
+
+            // Find user by phone number attribute
+            UserModel user = findUserByPhoneNumber(realm, request.phoneNumber);
+            if (user == null) {
+                return createErrorResponse("User not found with this phone number");
+            }
+
+            if (!user.isEnabled()) {
+                return createErrorResponse("Account is disabled");
+            }
+
+            // Create session for OTP
+            ClientModel client = getOrCreateOTPApiClient(realm);
+            RootAuthenticationSessionModel rootSession = session.authenticationSessions().createRootAuthenticationSession(realm);
+            AuthenticationSessionModel authSession = rootSession.createAuthenticationSession(client);
+            authSession.setAuthenticatedUser(user);
+            
+            // Generate and store OTP
+            String otpCode = generateOTP();
+            authSession.setAuthNote("SMS_OTP_CODE", otpCode);
+            authSession.setAuthNote("SMS_OTP_CREATED_AT", String.valueOf(System.currentTimeMillis() / 1000));
+            authSession.setAuthNote("OTP_TYPE", "sms");
+            
+            // Send SMS OTP (you'll need to implement SMS service)
+            sendSMSOTP(request.phoneNumber, otpCode, OTP_EXPIRY_SECONDS / 60);
+
+            logger.infof("SMS OTP sent to %s", maskPhoneNumber(request.phoneNumber));
+            return createSuccessResponse("OTP sent to phone successfully", Map.of(
+                "sessionId", authSession.getParentSession().getId(),
+                "type", "sms",
+                "expirySeconds", OTP_EXPIRY_SECONDS,
+                "maskedPhone", maskPhoneNumber(request.phoneNumber)
+            ));
+
+        } catch (Exception e) {
+            logger.error("Failed to send SMS OTP", e);
+            return createErrorResponse("Failed to send SMS OTP: " + e.getMessage());
+        }
+    }
+
+    @POST
+    @Path("/otp/login/verify-code")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response verifyLoginOTP(OTPLoginVerifyRequest request) {
+        try {
+            RealmModel realm = session.getContext().getRealm();
+
+            if (request.sessionId == null || request.sessionId.isEmpty()) {
+                return createErrorResponse("Session ID is required");
+            }
+
+            if (request.otpCode == null || request.otpCode.isEmpty()) {
+                return createErrorResponse("OTP code is required");
+            }
+
+            // Find the authentication session
+            RootAuthenticationSessionModel rootSession = session.authenticationSessions()
+                .getRootAuthenticationSession(realm, request.sessionId);
+            if (rootSession == null) {
+                return createErrorResponse("Invalid or expired session ID");
+            }
+
+            AuthenticationSessionModel authSession = rootSession.getAuthenticationSessions().values().iterator().next();
+            if (authSession == null) {
+                return createErrorResponse("No authentication session found");
+            }
+
+            UserModel user = authSession.getAuthenticatedUser();
+            if (user == null) {
+                return createErrorResponse("No user associated with this session");
+            }
+
+            // Determine OTP type and verify
+            String otpType = authSession.getAuthNote("OTP_TYPE");
+            boolean otpValid = false;
+            
+            if ("email".equals(otpType)) {
+                otpValid = verifyEmailOTP(authSession, request.otpCode);
+            } else if ("sms".equals(otpType)) {
+                otpValid = verifySMSOTP(authSession, request.otpCode);
+            } else {
+                return createErrorResponse("Invalid OTP type in session");
+            }
+
+            if (!otpValid) {
+                return createErrorResponse("Invalid or expired OTP code");
+            }
+
+            // Generate OAuth authorization code
+            String authorizationCode = generateAuthorizationCode();
+            
+            // Store authorization code in session for later exchange
+            authSession.setAuthNote("OAUTH_AUTH_CODE", authorizationCode);
+            authSession.setAuthNote("OAUTH_AUTH_CODE_CREATED_AT", String.valueOf(System.currentTimeMillis() / 1000));
+            
+            // Clean up OTP data
+            authSession.removeAuthNote("EMAIL_OTP_CODE");
+            authSession.removeAuthNote("EMAIL_OTP_CREATED_AT");
+            authSession.removeAuthNote("SMS_OTP_CODE");
+            authSession.removeAuthNote("SMS_OTP_CREATED_AT");
+            
+            // Update user login timestamp
+            user.setAttribute("last_login", List.of(String.valueOf(System.currentTimeMillis())));
+
+            logger.infof("OTP login verification successful for user %s via %s", user.getEmail(), otpType);
+            return createSuccessResponse("OTP verified successfully. Use authorization code to get access token.", Map.of(
+                "authorizationCode", authorizationCode,
+                "userId", user.getId(),
+                "email", user.getEmail(),
+                "otpType", otpType,
+                "expiresIn", 300 // 5 minutes to exchange for access token
+            ));
+
+        } catch (Exception e) {
+            logger.error("Failed to verify login OTP", e);
+            return createErrorResponse("Failed to verify OTP: " + e.getMessage());
+        }
+    }
+
+    // Helper methods for new OTP system
+    
+    private UserModel findUserByPhoneNumber(RealmModel realm, String phoneNumber) {
+        // Search for user by phone number attribute
+        return realm.searchForUserByUserAttributeStream("phoneNumber", phoneNumber)
+            .findFirst().orElse(null);
+    }
+    
+    private void sendSMSOTP(String phoneNumber, String otpCode, int expiryMinutes) {
+        // TODO: Implement SMS sending via Twilio SMS API
+        // For now, just log - you'll need to add Twilio SMS integration
+        logger.infof("SMS OTP would be sent to %s: %s (expires in %d minutes)", 
+                    maskPhoneNumber(phoneNumber), otpCode, expiryMinutes);
+        
+        // Example Twilio SMS implementation:
+        // twilioSMSService.sendSMS(phoneNumber, "Your verification code is: " + otpCode);
+    }
+    
+    private String maskPhoneNumber(String phoneNumber) {
+        if (phoneNumber == null || phoneNumber.length() < 4) return phoneNumber;
+        return phoneNumber.substring(0, 3) + "****" + phoneNumber.substring(phoneNumber.length() - 2);
+    }
+    
+    private boolean verifyEmailOTP(AuthenticationSessionModel authSession, String providedCode) {
+        String storedCode = authSession.getAuthNote("EMAIL_OTP_CODE");
+        String createdAtStr = authSession.getAuthNote("EMAIL_OTP_CREATED_AT");
+        
+        if (storedCode == null || createdAtStr == null) {
+            return false;
+        }
+        
+        // Check expiration
+        long createdAt = Long.parseLong(createdAtStr);
+        long now = System.currentTimeMillis() / 1000;
+        if ((now - OTP_EXPIRY_SECONDS) > createdAt) {
+            return false;
+        }
+        
+        return storedCode.equals(providedCode);
+    }
+    
+    private boolean verifySMSOTP(AuthenticationSessionModel authSession, String providedCode) {
+        String storedCode = authSession.getAuthNote("SMS_OTP_CODE");
+        String createdAtStr = authSession.getAuthNote("SMS_OTP_CREATED_AT");
+        
+        if (storedCode == null || createdAtStr == null) {
+            return false;
+        }
+        
+        // Check expiration
+        long createdAt = Long.parseLong(createdAtStr);
+        long now = System.currentTimeMillis() / 1000;
+        if ((now - OTP_EXPIRY_SECONDS) > createdAt) {
+            return false;
+        }
+        
+        return storedCode.equals(providedCode);
+    }
+    
+    private String generateAuthorizationCode() {
+        // Generate a secure authorization code for OAuth flow
+        SecureRandom random = new SecureRandom();
+        StringBuilder code = new StringBuilder(32);
+        String chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        for (int i = 0; i < 32; i++) {
+            code.append(chars.charAt(random.nextInt(chars.length())));
+        }
+        return code.toString();
     }
 
     private String findExistingLoginSession(RealmModel realm, UserModel user) {
@@ -372,5 +614,18 @@ public class OTPRestResource {
     public static class SecureLoginRequest {
         public String email;
         public String otpCode; // Optional - only provide after receiving OTP email
+    }
+
+    public static class OTPSendEmailRequest {
+        public String email;
+    }
+
+    public static class OTPSendSMSRequest {
+        public String phoneNumber;
+    }
+
+    public static class OTPLoginVerifyRequest {
+        public String sessionId;
+        public String otpCode;
     }
 }
