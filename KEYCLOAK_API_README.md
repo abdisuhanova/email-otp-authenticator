@@ -131,6 +131,7 @@ Configure these environment variables for your Keycloak instance:
 export SENDGRID_API_KEY="your-sendgrid-api-key"
 export SENDGRID_FROM_EMAIL="noreply@yourcompany.com"
 export SENDGRID_FROM_NAME="Your Company Name"
+export OTP_LENGTH="6"
 ```
 
 #### Docker Environment
@@ -143,6 +144,7 @@ services:
       - SENDGRID_API_KEY=your-sendgrid-api-key
       - SENDGRID_FROM_EMAIL=noreply@yourcompany.com
       - SENDGRID_FROM_NAME=Your Company Name
+      - OTP_LENGTH=6
     volumes:
       - ./email-otp-authenticator.jar:/opt/keycloak/providers/email-otp-authenticator.jar
 ```
@@ -159,6 +161,7 @@ stringData:
   SENDGRID_API_KEY: "your-sendgrid-api-key"
   SENDGRID_FROM_EMAIL: "noreply@yourcompany.com"
   SENDGRID_FROM_NAME: "Your Company Name"
+  OTP_LENGTH: "6"
 ```
 
 Then reference in your deployment:
@@ -275,6 +278,20 @@ The plugin works with standard Keycloak user attributes:
 - `emailVerified`: Boolean flag for email verification status
 - `enabled`: User account status
 
+## OTP Configuration
+
+### Environment Variables
+- **`OTP_LENGTH`**: Length of the OTP code (default: 6)
+  - Valid range: 4-10 digits
+  - Uses numeric characters only (0-9)
+  - Example: `export OTP_LENGTH="4"` for 4-digit OTPs
+
+### OTP Characteristics
+- **Character Set**: Numeric only (0123456789)
+- **Length**: Configurable via `OTP_LENGTH` environment variable
+- **Expiration**: 10 minutes (600 seconds)
+- **Generation**: Cryptographically secure random
+
 ## Security Considerations
 
 1. **HTTPS Only**: Always use HTTPS in production
@@ -283,6 +300,7 @@ The plugin works with standard Keycloak user attributes:
 4. **Expiration**: OTPs expire after 10 minutes
 5. **Secure Random**: Uses Java SecureRandom for OTP generation
 6. **One-time Use**: OTPs are deleted after successful verification or expiration
+7. **Numeric Only**: OTPs use only digits to avoid confusion
 
 ## Error Handling
 

@@ -23,8 +23,8 @@ import org.jboss.logging.Logger;
 public class OTPRestResource {
 
     private static final Logger logger = Logger.getLogger(OTPRestResource.class);
-    private static final String OTP_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    private static final int OTP_LENGTH = 6;
+    private static final String OTP_ALPHABET = "0123456789";
+    private static final int OTP_LENGTH = getOTPLengthFromEnv();
     private static final String AUTH_NOTE_OTP_KEY = "for-kc-email-otp-key";
     private static final String AUTH_NOTE_OTP_CREATED_AT = "for-kc-email-otp-created-at";
     private static final int OTP_EXPIRY_SECONDS = 600; // 10 minutes
@@ -191,6 +191,23 @@ public class OTPRestResource {
         response.put("message", message);
         response.put("data", null);
         return Response.status(Response.Status.BAD_REQUEST).entity(response).build();
+    }
+
+    private static int getOTPLengthFromEnv() {
+        String otpLength = System.getenv("OTP_LENGTH");
+        if (otpLength != null && !otpLength.isEmpty()) {
+            try {
+                int length = Integer.parseInt(otpLength);
+                if (length >= 4 && length <= 10) {
+                    return length;
+                } else {
+                    Logger.getLogger(OTPRestResource.class).warnf("OTP_LENGTH environment variable must be between 4 and 10. Using default: 6");
+                }
+            } catch (NumberFormatException e) {
+                Logger.getLogger(OTPRestResource.class).warnf("Invalid OTP_LENGTH environment variable: %s. Using default: 6", otpLength);
+            }
+        }
+        return 6; // Default length
     }
 
     private ClientModel getOrCreateOTPApiClient(RealmModel realm) {
