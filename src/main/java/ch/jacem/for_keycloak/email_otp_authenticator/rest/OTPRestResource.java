@@ -460,8 +460,15 @@ public class OTPRestResource {
     
     private UserModel findUserByPhoneNumber(RealmModel realm, String phoneNumber) {
         // Search for user by phone number attribute
-        return realm.searchForUserByUserAttributeStream("phoneNumber", phoneNumber)
-            .findFirst().orElse(null);
+        try {
+            return session.users().searchForUserByUserAttributeStream(realm, "phoneNumber", phoneNumber)
+                .findFirst().orElse(null);
+        } catch (Exception e) {
+            // Fallback to manual search if stream method not available
+            return session.users().searchForUserStream(realm, phoneNumber, 0, 1)
+                .filter(user -> phoneNumber.equals(user.getFirstAttribute("phoneNumber")))
+                .findFirst().orElse(null);
+        }
     }
     
     private void sendSMSOTP(String phoneNumber, String otpCode, int expiryMinutes) {
