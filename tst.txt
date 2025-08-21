@@ -1,0 +1,16 @@
+email sms
+sms
+sms/send-code
+sms/login
+
+email
+email/send-code 
+email/login
+
+casdoor
+login
+  data{ 
+    username = example@com
+    code = 123456
+}
+author_code
